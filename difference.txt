@@ -1,0 +1,135 @@
+[jpalanis@jpalanis-thinkpadt14sgen2i ~]$ diff tripleo-heat-templates/deployment/neutron/derive_pci_passthrough_whitelist.py testing/derive_pci_passthrough_whitelist.py
+25c25
+< _PASSTHROUGH_WHITELIST_KEY = 'nova::compute::pci::passthrough'
+---
+> _PASSTHROUGH_WHITELIST_KEY = 'device_spec'
+28c28
+< _DERIVED_PCI_WHITELIST_FILE = '/etc/puppet/hieradata/pci_passthrough_whitelist.json'
+---
+> _DERIVED_PCI_WHITELIST_FILE = '<latest>'
+241,258d240
+< def user_passthrough_config():
+<     try:
+<         out, err = processutils.execute(
+<             'hiera', '-f', 'json', '-c', '/etc/puppet/hiera.yaml',
+<             _PASSTHROUGH_WHITELIST_KEY
+<             )
+<         if not err:
+<             data = json.loads(out)
+<             # Check the data type of first json decode
+<             if isinstance(data, str):
+<                 # Decode once again to get the list
+<                 return (json.loads(data))
+<             elif isinstance(data, list):
+<                 return data
+<     except processutils.ProcessExecutionError:
+<         raise
+< 
+< 
+458,477c440,463
+< 
+< def get_pf_name_from_phy_network(physical_network):
+<     try:
+<         out, err = processutils.execute(
+<             'hiera', '-c', '/etc/puppet/hiera.yaml',
+<             'neutron::agents::ml2::sriov::physical_device_mappings')
+<         if not err:
+<             phys_dev_mappings = json.loads(out)
+<             ''' Check the data type of first json decode '''
+<             if not isinstance(phys_dev_mappings, list):
+<                 msg = f'ml2::sriov::physical_device_mappings specified is not a list {phys_dev_mappings}'
+<                 raise InvalidConfigException(msg)
+< 
+<             for phy_dev_map in phys_dev_mappings:
+<                 net_name, nic_name = phy_dev_map.split(':')
+<                 if net_name == physical_network:
+<                     return nic_name
+<             return None
+<     except processutils.ProcessExecutionError:
+<         raise
+---
+> def get_network_device_mapping(sriov_nic_mapping):
+>     mapping = {}
+>     if sriov_nic_mapping:
+>         network_device_list = sriov_nic_mapping.split(',')
+>         for network_device_str in network_device_list:
+>             network_device_map = network_device_str.strip().split(':')
+>             print(len(network_device_map))
+>             if len(network_device_map) == 2:
+>                 print("true")
+>                 mapping[network_device_map[0].strip()] = network_device_map[1].strip()
+>                 print(mapping)
+>             else:
+>                print("false")
+>                raise InvalidConfigException("NIC_MAPPING_ERROR")
+>     if len(mapping) == 0:
+>         raise InvalidConfigException("NIC MAPPING ERROR")
+>     return mapping
+>         
+> def get_pf_name_from_phy_network(network_device_mapping, physical_network):
+>     for phy_dev_map in phys_dev_mappings:
+>        net_name, nic_name = phy_dev_map.split(':')
+>        if net_name == physical_network:
+>            return nic_name
+>     return None
+480c466
+< def generate_combined_configuration(user_configs, system_configs):
+---
+> def generate_combined_configuration(user_configs, system_configs, network_device_mapping):
+507c493
+<             pf = get_pf_name_from_phy_network(user_config['physical_network'])
+---
+>             pf = get_pf_name_from_phy_network(network_device_mapping, user_config['physical_network'])
+533a520,547
+> def get_nova_configs(nova_config_file):
+>     configs = []
+>     print(nova_config_file)
+>     try:
+>         with open(nova_config_file) as nova_config:
+>             configs = nova_config.read().strip()
+>     except IOError:
+>         configs = []
+>     return configs
+> 
+> def user_passthrough_config(nova_conf_path, nova_configmap_files):
+>     passtrhough_configs = []
+>     pci_nova_config_files = []
+>     for nova_config_file in nova_configmap_files:
+>         nova_configs = get_nova_configs(nova_conf_path+nova_config_file)
+>         pci_exists = False
+>         for line in nova_configs.split('\n'):
+>             if line.startswith('['):
+>                 pci_exists = False    
+>             if line.startswith('[pci]'):
+>               pci_exists = True
+>               pci_nova_config_files.append(nova_config_file)
+>             if pci_exists and line.startswith('device_spec'):
+>                 passthrough_data = line.split('=')[1].strip()
+>                 if passthrough_data:
+>                     passtrhough_configs.append(json.loads(passthrough_data))
+>     return passtrhough_configs, pci_nova_config_files
+> 
+539,540c553,557
+<     user_configs = user_passthrough_config()
+< 
+---
+>     nova_conf_path = "/var/lib/openstack/config/nova"
+>     nova_configmap_files = ["03-sriov-nova.conf","04-cpu-pinning-nova.conf"]
+>     user_configs, pci_files = user_passthrough_config(nova_conf_path, nova_configmap_files)
+>     sriov_nic_mapping = "sriov1:eno3,sriov2:eno4"
+>     network_device_mapping = get_network_device_mapping(sriov_nic_mapping)
+546c563
+<         user_configs, system_configs)
+---
+>         user_configs, system_configs, network_device_mapping)
+551a569
+>     print(derived)
+555,556c573,575
+<         with open(pci_file_path, 'w') as pci_file:
+<             json.dump(pci_passthrough, pci_file)
+---
+>         print(pci_passthrough)
+>         #with open(pci_file_path, 'w') as pci_file:
+>          #   json.dump(pci_passthrough, pci_file)
+[jpalanis@jpalanis-thinkpadt14sgen2i ~]$ 
+
